@@ -167,6 +167,14 @@ selectWindow(calcResultTitle);
 if (bitChoice == "16-bit") run("16-bit");
 else                       run("8-bit");
 
+// Ensure all non-processed channels match the requested bit-depth
+for (c = 0; c < nChannels; c++) {
+    if (c == procChan - 1) continue;
+    selectWindow(splitTitles[c]);
+    if (bitChoice == "16-bit") run("16-bit");
+    else                       run("8-bit");
+}
+
 
 
 // -----------------------------

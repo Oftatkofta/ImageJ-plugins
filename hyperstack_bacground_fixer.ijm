@@ -1,28 +1,26 @@
-// ============================================================================
-// Macro: Channel Background Division & Recombine (Documented)
-// Purpose:
-//   1) Split the active multichannel image into separate channel images.
-//   2) Duplicate one selected channel (default: channel 1; user-settable).
-//   3) Apply Gaussian Blur (default sigma = 50 px; user-settable) to the copy.
-//   4) Use Image Calculator to divide the ORIGINAL channel by the blurred copy,
-//      creating a 32-bit result (division-based background correction).
-//   5) Apply auto contrast with user-settable saturation (default 0.35%).
-//   6) Convert the result to the requested bit-depth: 16-bit (default) or 8-bit.
-//   7) Merge the processed channel back together with the other split channels.
+// =============================================================================
+// Macro: Hyperstack Background Fixer
+// In plain words, this script:
+//   1) Splits the current multichannel image into one image per channel.
+//   2) Makes a soft (blurred) version of the channel you want to clean up.
+//   3) Divides the original channel by the blurred copy to remove background.
+//   4) Boosts the contrast so the result is easier to see.
+//   5) Converts every channel to the bit depth you choose (16-bit or 8-bit).
+//   6) Puts all channels back together again.
 //
-// Notes & Assumptions:
-//   - The active image is a multichannel stack or hyperstack.
-//   - "Split Channels" names outputs as: "C<index>-<original title>".
-//   - Merge supports up to 7 channels (ImageJ limitation). This macro enforces it.
-//   - Intermediates can optionally be auto-closed after merging.
+// Things to know before you run it:
+//   - Your starting image must have at least two channels.
+//   - ImageJ only lets us merge up to 7 channels, so that is the upper limit.
+//   - Intermediate images can be closed automatically when we are done.
 //
 // Author: Jens Eriksson
-// ============================================================================
+// =============================================================================
 
 
-// -----------------------------
-// Section 0 — Small helpers
-// -----------------------------
+// ---------------------------------------------------------------------------
+// Step 0 — Helper functions
+// Simple utility pieces used throughout the script.
+// ---------------------------------------------------------------------------
 
 function isOpen(title) {
     list = getList("image.titles");
@@ -48,14 +46,15 @@ function clampChannelIndex(idx, nC) {
 }
 
 
-// -----------------------------
-// Section 1 — Inspect active image
-// -----------------------------
+// ---------------------------------------------------------------------------
+// Step 1 — Look at the image on screen
+// We grab its title and basic dimensions so later steps know what to expect.
+// ---------------------------------------------------------------------------
 
 origTitle = getTitle();
 selectWindow(origTitle);
 
-// Get dimensions: width, height, channels, slices (Z), frames (T)
+// Save width, height, number of channels, slices (Z), and time frames (T)
 getDimensions(w, h, nChannels, numSlices, numFrames);
 
 if (nChannels < 2) {
@@ -68,15 +67,16 @@ if (nChannels > 7) {
 }
 
 
-// -----------------------------
-// Section 2 — Collect user parameters
-// -----------------------------
+// ---------------------------------------------------------------------------
+// Step 2 — Ask the user for settings
+// A dialog lets the user pick which channel to fix and how strong the blur should be.
+// ---------------------------------------------------------------------------
 
 Dialog.create("Channel Division Parameters");
-Dialog.addNumber("Channel to process (1.." + nChannels + ")", 1);             // default: channel 1
-Dialog.addNumber("Gaussian Blur sigma (pixels)", 50);                          // default: 50 px
-Dialog.addNumber("Auto-contrast saturation (%)", 0.35);                        // default: 0.35%
-Dialog.addChoice("Output bit-depth", newArray("16-bit","8-bit"), "16-bit");    // default: 16-bit
+Dialog.addNumber("Channel to process (1.." + nChannels + ")", 1);             // default choice is channel 1
+Dialog.addNumber("Gaussian Blur sigma (pixels)", 50);                          // default blur strength is 50 px
+Dialog.addNumber("Auto-contrast saturation (%)", 0.35);                        // default contrast stretch is 0.35%
+Dialog.addChoice("Output bit-depth", newArray("16-bit","8-bit"), "16-bit");    // default output is 16-bit
 Dialog.addCheckbox("Keep intermediate images (split/blur/result)", false);
 Dialog.show();
 
@@ -87,87 +87,88 @@ bitChoice  = Dialog.getChoice();
 keepInterm = Dialog.getCheckbox();
 
 
-// -----------------------------
-// Section 3 — Split channels
-// -----------------------------
-// Produces single-channel images named "C#-<origTitle>".
+// ---------------------------------------------------------------------------
+// Step 3 — Split the channels into separate images
+// ImageJ names them "C<#>-<original title>".
+// ---------------------------------------------------------------------------
 
 run("Split Channels");
 
-// Record expected split titles and verify they exist
+// Make sure every expected split image actually opened
 splitTitles = expectedSplitTitles(origTitle, nChannels);
 for (c = 0; c < nChannels; c++) {
     if (!isOpen(splitTitles[c])) {
         showMessage("Error",
             "Expected split channel not found:\n  " + splitTitles[c] +
             "\nCheck that split naming is 'C#-OriginalTitle'.");
-        // Attempt cleanup
+        // Clean up anything we already opened, then stop the macro
         for (c2 = 0; c2 < nChannels; c2++) tryClose(splitTitles[c2]);
         exit();
     }
 }
 
 
-// -----------------------------
-// Section 4 — Duplicate & blur the selected channel
-// -----------------------------
+// ---------------------------------------------------------------------------
+// Step 4 — Copy the channel we will correct and blur the copy
+// The blur gives us the smooth background we want to divide out.
+// ---------------------------------------------------------------------------
 
 procSrcTitle = splitTitles[procChan - 1];          // title of channel to process
 selectWindow(procSrcTitle);
 
-// Duplicate the selected channel for blurring
+// Duplicate the channel we want to correct
 blurCopyTitle = "BlurCopy_of_" + procSrcTitle;
 run("Duplicate...", "title=" + blurCopyTitle + " duplicate");
 
-// Apply Gaussian Blur to the duplicate
-// Note: Gaussian Blur on a stack applies to all slices automatically
+// Blur the duplicate. ImageJ applies the blur to the whole stack automatically.
 selectWindow(blurCopyTitle);
 run("Gaussian Blur...", "sigma=" + blurSigma + " stack");
 
 
-// -----------------------------
-// Section 5 — Divide original by blurred copy (32-bit)
-// -----------------------------
-// This performs division-based background correction.
+// ---------------------------------------------------------------------------
+// Step 5 — Divide the original channel by the blurred copy
+// This is the background correction step.
+// ---------------------------------------------------------------------------
 
 selectWindow(procSrcTitle);
 calcResultTitle = "Divided_" + procSrcTitle;
 
 
-// Perform division - Image Calculator preserves stack structure
+// Run the Image Calculator. "stack" keeps the full data cube intact.
 selectWindow(procSrcTitle);
 imageCalculator("Divide create 32-bit stack", procSrcTitle, blurCopyTitle);
-// Image Calculator creates a new window - get its title and rename
+// Image Calculator opens a new window. Rename it to the expected title.
 newCalcTitle = getTitle();
 if (newCalcTitle != calcResultTitle) {
     selectWindow(newCalcTitle);
     rename(calcResultTitle);
 }
-// Verify the window exists and select it
+// Make sure the window exists. If not, explain the problem and stop.
 if (!isOpen(calcResultTitle)) {
     showMessage("Error", "Failed to create or rename Image Calculator result window.");
     exit();
 }
 
 
-// -----------------------------
-// Section 6 — Auto contrast on the result
-// -----------------------------
-// Apply enhance contrast on the 32-bit image before bit-depth reduction.
+// ---------------------------------------------------------------------------
+// Step 6 — Boost the contrast so details stand out
+// We do this while the data is still in 32-bit precision.
+// ---------------------------------------------------------------------------
 
 selectWindow(calcResultTitle);
 run("Enhance Contrast...", "saturated=" + satPercent);
 
 
-// -----------------------------
-// Section 7 — Convert to requested bit-depth
-// -----------------------------
+// ---------------------------------------------------------------------------
+// Step 7 — Convert to the bit depth the user selected
+// All channels must match so ImageJ can merge them later.
+// ---------------------------------------------------------------------------
 
 selectWindow(calcResultTitle);
 if (bitChoice == "16-bit") run("16-bit");
 else                       run("8-bit");
 
-// Ensure all non-processed channels match the requested bit-depth
+// Convert every other channel so they all match the new bit depth
 for (c = 0; c < nChannels; c++) {
     if (c == procChan - 1) continue;
     selectWindow(splitTitles[c]);
@@ -177,10 +178,10 @@ for (c = 0; c < nChannels; c++) {
 
 
 
-// -----------------------------
-// Section 8 — Recombine channels
-// -----------------------------
-// Replace processed channel and merge back to a multichannel image.
+// ---------------------------------------------------------------------------
+// Step 8 — Put the channels back together
+// We replace the cleaned channel and rebuild the multichannel image.
+// ---------------------------------------------------------------------------
 
 
 mergeSpec = "";
@@ -192,7 +193,7 @@ for (c = 1; c <= nChannels; c++) {
 mergeSpec = mergeSpec + "create";
 run("Merge Channels...", mergeSpec);
 
-// Get the merged result title and make it composite
+// Rename the merged result and show it as a composite stack
 mergedTitle = getTitle();
 selectWindow(mergedTitle);
 run("Make Composite");
@@ -201,17 +202,18 @@ selectWindow(mergedTitle);
 rename(recombinedTitle);
 
 
-// -----------------------------
-// Section 9 — Cleanup (optional)
-// -----------------------------
+// ---------------------------------------------------------------------------
+// Step 9 — Optional cleanup
+// Close the split channels and helper images if the user did not ask to keep them.
+// ---------------------------------------------------------------------------
 
 if (!keepInterm) {
-    for (c = 0; c < nChannels; c++) tryClose(splitTitles[c]); // close split channels
+    for (c = 0; c < nChannels; c++) tryClose(splitTitles[c]); // close each split channel
     tryClose(blurCopyTitle);
-    tryClose(calcResultTitle); // processed channel (now merged, use finalProcTitle)
+    tryClose(calcResultTitle); // close the processed channel window
 }
 
-// Bring final image to front
+// Bring the finished image to the front so the user sees it
 selectWindow(recombinedTitle);
 
 // =============================
